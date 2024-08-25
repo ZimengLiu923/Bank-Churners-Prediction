@@ -1,0 +1,357 @@
+---
+title: "Final Project"
+author: "Zimeng Liu"
+date: "2022-11-21"
+output: word_document
+---
+
+Data Preprocessing
+
+Import dataset into R Studio.
+```{r}
+library(urca) #package for data processing
+library(dplyr) #package for data processing
+library(tree) #package for classification tree
+library(ROSE) #package for over/under sampling
+library(randomForest) #package for random forest
+library(gbm) #package for boosting
+library(MASS) #package for LDA
+BankChurners <- read.csv('C:\\Users\\Zimeng\\OneDrive - Dickinson College\\Desktop\\Dickinson\\7th\\DATA 300\\project\\BankChurners.csv')
+View(BankChurners)
+dim(BankChurners)
+```
+
+Identify the response and use 1 and 0 to label it.
+```{r}
+table(BankChurners$Attrition_Flag)
+```
+
+Understand the predictors and start to process the dataset.
+```{r}
+summary(BankChurners)
+
+BankChurners <- BankChurners %>% dplyr::select(-CLIENTNUM, -Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_1, -Naive_Bayes_Classifier_Attrition_Flag_Card_Category_Contacts_Count_12_mon_Dependent_count_Education_Level_Months_Inactive_12_mon_2)
+
+summary(BankChurners)
+
+BankCate <- c("Gender", "Education_Level", "Marital_Status", "Income_Category", "Card_Category")
+
+
+fun_countunique <- function(x){
+  return(length(unique(x)))
+}
+sapply(BankChurners[, BankCate], FUN = fun_countunique)
+
+sapply(BankChurners[, BankCate], table)
+```
+
+Delete all NA values.
+```{r}
+dim(BankChurners)
+BankChurners <- na.omit(BankChurners)
+dim(BankChurners)
+```
+
+Split the dataset into training and testing and make sure 2 values of Attrition_Flag are both included in training and testing datasets.
+```{r}
+set.seed(111)
+sample <- sample(c(TRUE, FALSE), nrow(BankChurners), replace=TRUE, prob=c(0.7,0.3))
+table(sample)
+BankTraining <- BankChurners[sample, ]
+BankTesting <- BankChurners[!sample, ]
+table(BankTraining$Attrition_Flag)
+table(BankTesting$Attrition_Flag)
+```
+
+Classification Decision Tree
+
+Build a classification tree using as.factor(). The training error rate is 6.95%.
+```{r}
+BankTree <- tree(as.factor(Attrition_Flag) ~., BankTraining)
+summary(BankTree)
+plot(BankTree)
+text(BankTree, pretty = 0,cex = 0.26)
+```
+
+Since the # of Existing Customer is much larger than the # of Attrited Customer, we both oversample and undersample the training dataset.
+```{r}
+BankTraining <- ovun.sample(Attrition_Flag ~ ., data = BankTraining, method = "both", N=nrow(BankTraining), seed = 111)$data
+table(BankTraining$Attrition_Flag)
+```
+
+Build a classification tree using the balanced training set. The training error rate is 8.35%.
+```{r}
+set.seed(111)
+BankTree <- tree(as.factor(Attrition_Flag) ~., BankTraining)
+summary(BankTree)
+plot(BankTree)
+text(BankTree, pretty = 0,cex = 0.26)
+```
+
+Split criterion, # of observations in the branch, deviance, overall prediction for the branch, fraction of observations
+```{r}
+BankTree
+```
+
+I think both positive predictive value and true positive rate are important, so I choose to evaluate the F1 score. The result is 74.25%.
+```{r}
+set.seed(111)
+TreePred <- predict(BankTree, BankTesting, type = "class")
+table(BankTesting$Attrition_Flag, TreePred)
+2*483/(2*483 + 299 + 36)
+```
+
+Tree pruning. Since dev is the samllest when size is 13 or 11, I decide to prune the tree to a 9 node tree.
+```{r}
+set.seed(111)
+BankCv <- cv.tree(BankTree, FUN = prune.misclass)
+BankCv
+BankPrune <- prune.misclass(BankTree, best = 11)
+plot(BankPrune)
+text(BankTree, pretty = 0, cex = 0.3)
+```
+I use the pruned classification tree this time. The F1 score is exactly the same as not pruned tree.
+```{r}
+PrunePred <- predict(BankPrune, BankTesting, type = "class")
+table(BankTesting$Attrition_Flag, PrunePred)
+2*483/(2*483 + 299 + 36)
+```
+
+Bagging with all predictors being considered. The F1 score increases to 86.86%.
+```{r}
+set.seed(111)
+BankBag <- randomForest(as.factor(Attrition_Flag) ~., data = BankTraining, mtry = 19, importance = TRUE)
+BankBag
+BagPred <- predict(BankBag, BankTesting, type = "class")
+table(BankTesting$Attrition_Flag, BagPred)
+2*466/(2*466 + 88 + 53)
+```
+Bagging with 4 predictors being considered. The F1 score increases to 88.83%.
+```{r}
+set.seed(111)
+BankRf <- randomForest(as.factor(Attrition_Flag) ~., data = BankTraining, mtry = 4, importance = TRUE)
+BankRf
+RfPred <- predict(BankRf, BankTesting, type = "class")
+table(BankTesting$Attrition_Flag, RfPred)
+2*469/(2*469 + 68 + 50)
+```
+
+Variable imporatance. 
+```{r}
+importance(BankRf)
+varImpPlot(BankRf, cex = 0.4)
+```
+
+Preparation for boosting.
+```{r}
+for (k in BankCate) {
+  BankTraining[[k]] <- as.factor(BankTraining[[k]])
+  BankTesting[[k]] <- as.factor(BankTesting[[k]])
+}
+BankTrain <- BankTraining
+BankTest <- BankTesting
+BankTrain$Attrition_Flag <- factor(BankTrain$Attrition_Flag, levels = c("Existing Customer","Attrited Customer"), labels=c(0,1))
+BankTest$Attrition_Flag <- factor(BankTest$Attrition_Flag, levels = c("Existing Customer","Attrited Customer"), labels=c(0,1))
+```
+
+With boosting with n.trees = 5000, the top 5 predictors with highest relative influence are Total_Trans_Ct, Total_Revolving_Bal, Total_Trans_Amt, Total_Ct_Chng_Q4_Q1, and Total_Amt_Chng_Q4_Q1, and the F1 decreases to 80.88% when the cutoff point is 0.2 which is the mean.
+```{r}
+set.seed(111)
+BankBoost <- gbm(as.character(Attrition_Flag) ~., data = BankTrain, distribution = "bernoulli", n.trees = 5000)
+summary(BankBoost)
+BoostPred <- predict(BankBoost, BankTest, distribution = "bernoulli", type = "response", shrinkage = 5000)
+summary(BoostPred)
+PredClass <- ifelse(BoostPred < 0.2, 0, 1)
+table(BankTest$Attrition_Flag, PredClass)
+2*499/(2*499+216+20)
+```
+
+Logistic Regression
+
+Build a logistic regression model with glm(). The F1 score of the logistic regression is 54.16%.
+```{r}
+options(scipen=200)
+
+set.seed(111)
+BankLog <- glm(Attrition_Flag ~., family = "binomial", data = BankTrain)
+summary(BankLog)
+LogPred <- predict(BankLog, BankTest, type = "response")
+LogClass <- ifelse(LogPred < 0.2, 0, 1)
+table(BankTest$Attrition_Flag, LogClass)
+2*498/(2*498 + 822 + 21)
+```
+
+Using the LDA model, the F1 score of the logistic regression increases to 65.52%.
+```{r}
+set.seed(111)
+BankLDA <- lda(Attrition_Flag ~., data = BankTraining)
+summary(BankLDA)
+LDAPred <- predict(BankLDA, BankTesting)
+LDAClass <- LDAPred$class
+LDAClass <- as.factor(LDAClass)
+levels(LDAClass) <- c("Attrited Customer", "Existing Customer")
+LDAClass <- relevel(LDAClass, "Attrited Customer")
+table(BankTesting$Attrition_Flag, LDAClass)
+2*437/(2*437 + 82 + 378)
+```
+
+Using the QDA model, R told me "Error: rank deficiency in group Attrited Customer", so I have to skip it.
+```{r}
+#set.seed(111)
+#BankQDA <- qda(Attrition_Flag ~., data = BankTraining)
+```
+
+Use cross-validation to improve the performance of glm model. Since I do not have another test data set, I decide to use cross-validation with 5 folds on the training set. The average cross-validation F1 score rapidly increases to 82.91%.
+```{r}
+library(caret)
+
+k <- 5
+set.seed(111)
+folds <- createFolds(BankTrain$Attrition_Flag, k)
+accList <- 0
+
+for (i in 1:5){
+  validationi <- BankTrain[folds[[i]],]
+  traini <- BankTrain[-folds[[i]], ]
+  modeli <- glm(Attrition_Flag ~., family = "binomial", data = traini)
+  predi <- predict(object = modeli, newdata = validationi, type = "response")
+  predi_class <- ifelse(predi > 0.2, 1, 0)
+  confui <- table(validationi$Attrition_Flag, predi_class)
+  confui[2,2]
+  acci <- (confui[2,2]*2)/(confui[1,2]+confui[2,1]+confui[2,2]*2)
+  accList <- c(accList, acci)
+}
+accList <- accList[-1]
+mean(accList)
+```
+
+However, using the test data set, the average cross-validation F1 score is about 66.97%.
+```{r}
+k <- 5
+set.seed(111)
+folds <- createFolds(BankTest$Attrition_Flag, k)
+accList <- 0
+
+for (i in 1:5){
+  validationi <- BankTest[folds[[i]],]
+  traini <- BankTest[-folds[[i]], ]
+  modeli <- glm(Attrition_Flag ~., family = "binomial", data = traini)
+  predi <- predict(object = modeli, newdata = validationi, type = "response")
+  predi_class <- ifelse(predi > 0.2, 1, 0)
+  confui <- table(validationi$Attrition_Flag, predi_class)
+  confui[2,2]
+  acci <- (confui[2,2]*2)/(confui[1,2]+confui[2,1]+confui[2,2]*2)
+  acci
+  accList <- c(accList, acci)
+}
+accList <- accList[-1]
+mean(accList)
+```
+
+I tried 10 folds this time. The average cross-validation F1 score sightly increases to 82.94%.
+```{r}
+k <- 10
+set.seed(111)
+folds <- createFolds(BankTrain$Attrition_Flag, k)
+accList <- 0
+
+for (i in 1:10){
+  validationi <- BankTrain[folds[[i]],]
+  traini <- BankTrain[-folds[[i]], ]
+  modeli <- glm(Attrition_Flag ~., family = "binomial", data = traini)
+  predi <- predict(object = modeli, newdata = validationi, type = "response")
+  predi_class <- ifelse(predi > 0.2, 1, 0)
+  confui <- table(validationi$Attrition_Flag, predi_class)
+  confui[2,2]
+  acci <- (confui[2,2]*2)/(confui[1,2]+confui[2,1]+confui[2,2]*2)
+  accList <- c(accList, acci)
+}
+accList <- accList[-1]
+mean(accList)
+```
+
+Using the test data set, the average cross-validation F1 score slightly decreases to 66.60%.
+```{r}
+k <- 10
+set.seed(111)
+folds <- createFolds(BankTest$Attrition_Flag, k)
+accList <- 0
+
+for (i in 1:10){
+  validationi <- BankTest[folds[[i]],]
+  traini <- BankTest[-folds[[i]], ]
+  modeli <- glm(Attrition_Flag ~., family = "binomial", data = traini)
+  predi <- predict(object = modeli, newdata = validationi, type = "response")
+  predi_class <- ifelse(predi > 0.2, 1, 0)
+  confui <- table(validationi$Attrition_Flag, predi_class)
+  confui[2,2]
+  acci <- (confui[2,2]*2)/(confui[1,2]+confui[2,1]+confui[2,2]*2)
+  acci
+  accList <- c(accList, acci)
+}
+accList <- accList[-1]
+mean(accList)
+```
+
+Variable Selection
+
+Use regsubsets() function to find out the optimal number of variables is 12, because Adjusted R-squared reaches the highest point and Cp, AIC, and BIC reach the lowest point when the number of variables equals to 12. The optimal variable combination is GenderM, Marital_StatusMarried, Card_CategoryGold, Months_on_book, Total_Relationship_Count, Months_Inactive_12_mon, Contacts_Count_12_mon, Total_Revolving_Bal,  Total_Trans_Amt, Total_Trans_Ct, Total_Ct_Chng_Q4_Q1, Avg_Utilization_Ratio.
+```{r}
+library(leaps)
+regfit <- regsubsets(Attrition_Flag~., BankTrain, nvmax=12)
+sumRegfit <- summary(regfit)
+par(mfrow = c(2,2))
+plot(sumRegfit$adjr2, xlab = "Number of Variables", ylab = "Adjusted R-squared", type = "l")
+plot(sumRegfit$cp, xlab = "Number of Variables", ylab = "Cp", type = "l")
+plot(sumRegfit$cp, xlab = "Number of Variables", ylab = "AIC", type = "l")
+plot(sumRegfit$bic, xlab = "Number of Variables", ylab = "BIC", type = "l")
+options(scipen=200)
+coef(regfit, 12)
+```
+
+Using stepAIC() function, 
+```{r}
+#nullreg <- lm(Attrition_Flag~1., BankTrain)
+#allreg <- lm(Attrition_Flag~., BankTrain)
+#forreg <- stepAIC(nullreg, direction = "forward", scope = list(upper = allreg, #lower = nullreg), trace = FALSE)
+#summary(forreg)
+#backreg <- stepAIC(nullreg, direction = "backward", scope = list(upper = BankLog, #lower = nullreg), trace = FALSE)
+#summary(backreg)
+```
+
+Error in storage.mode(y) <- "double" : 
+  invalid to change the storage mode of a factor
+```{r}
+#library(glmnet)
+#as.numeric(BankTrain$Attrition_Flag)
+#x <- model.matrix(Attrition_Flag~., BankTrain)[,-1]
+#y <- BankTrain$Attrition_Flag
+#cv.glmnet(x, y, alpha = 0)
+#cv.ridge <- glmnet(x, y, alpha = 0, lambda = 0.02883)
+```
+
+SVM
+
+
+```{r}
+library(e1071)
+
+BankSVM <- svm(Attrition_Flag ~., BankTrain, kernel = "linear", cost = 5, scale = FALSE)
+summary(BankSVM)
+SVMPred <- predict(BankSVM, BankTest, type = "response")
+#SVMClass <- ifelse(SVMPred < 0.2, 0, 1)
+table(BankTest$Attrition_Flag, SVMPred)
+2*402/(2*402 + 416 + 117)
+```
+
+```{r}
+set.seed(111)
+TuneBank <- tune(svm, Attrition_Flag ~., data = BankTrain, kernel = "linear", ranges = list(cost = c(0.01, 0.1, 1, 5, 10)))
+```
+
+```{r}
+BankSVM2 <- svm(Attrition_Flag ~., BankTrain, kernel = "polynomial", cost = 5, scale = FALSE)
+```
+
+
+
